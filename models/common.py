@@ -15,11 +15,13 @@ class Conv(nn.Module):
     """
     Basic CBR operation -> Conv2d+Batchnormalization+ReLU
     """
-    def __init__(self, c1, c2, k, s=1, p=None, g=1, d=1, act=True):
+    def __init__(self, c1, c2, k, s=1, p=None, g=1, d=1, act="relu6"):
         super().__init__()
         self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         self.bn = nn.BatchNorm2d(c2)
         self.act = nn.ReLU6() if act else nn.Identity()
+        if act == "relu":
+            self.act = nn.ReLU()
 
     def forward(self, x):
         return self.act(self.bn(self.conv(x)))
@@ -30,23 +32,23 @@ class DWConv(Conv): # depthwise convolution
     Inherit Conv
     """
     def __init__(self, c1, c2, k, s=1, d=1, act=True):
-        super().__init__(self, c1, c2, k, s=s, g=c1, d=d, act=act)
+        super().__init__(c1, c2, k, s=s, g=c1, d=d, act=act)
 
 
 class Mbnv2_block(nn.Module):
-    def __init__(self, c1, c2, stride, expansion, block_id, alpha=0.25):
+    def __init__(self, c1, c2, stride, expansion, block_id, alpha=0.5):
         super().__init__()
         self.pointwise_filters = make_divisble(int(c2*alpha), 8)
         self.in_channels = c1
         self.block_id = block_id
         self.stride = stride
-        self.expand_conv = Conv(c1, c1*expansion, k=1, s=1, p=0, act=True)
+        self.expand_conv = Conv(c1, c1*expansion, k=1, s=1, p=None, act=True)
 
         self.dwconv = DWConv(c1*expansion, c1*expansion, k=3, s=self.stride)
         self.pointwise_conv = Conv(c1*expansion, self.pointwise_filters, k=1, act=False)
 
     def forward(self, x):
-        identity = x.copy()
+        identity = x
         if self.block_id:
             x = self.expand_conv(x)
         out = self.dwconv(x)
@@ -58,7 +60,7 @@ class Mbnv2_block(nn.Module):
         return out
 
 
-def make_divisble(self, v, divisor, mini_value=None):
+def make_divisble(v, divisor, mini_value=None):
     if not mini_value:
         mini_value = divisor
 
@@ -68,5 +70,9 @@ def make_divisble(self, v, divisor, mini_value=None):
         new_v += divisor
     return new_v
 
+
+class DWConvTranspose2d(nn.ConvTranspose2d):
+    def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):  # ch_in, ch_out, kernel, stride, padding, padding_out
+        super().__init__(c1, c2, k, s, p1, p2, groups=c1)
 
 
