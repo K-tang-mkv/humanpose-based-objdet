@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torchsummary import summary
 
 from common import *
 
@@ -27,7 +28,7 @@ class HumanPose_MBN(nn.Module):
         self.bb_last_conv = Conv(make_divisble(int(64*alpha), 8), c2=1280, k=1)
 
         # backbone
-        self.sequential = nn.Sequential(
+        self.backbone_sequential = nn.Sequential(
             self.conv0,
             self.block0,
             self.block1,
@@ -44,24 +45,61 @@ class HumanPose_MBN(nn.Module):
             self.block12,
             self.bb_last_conv
         )
+        self.fm_p2 = self.backbone_sequential[:4]  # feature map with 4 times downsample, output of block2
+        self.fm_p3 = self.backbone_sequential[:7]  # p3/8
+        self.fm_p4 = self.backbone_sequential[:11]  # p4/16
 
         # head
         # fuse-1 -------------------------------
-        self.fuse1_conv1 = Conv(1280, 64, k=1, act="relu")
-        self.fuse1_dwtranconv = DWConvTranspose2d(64, 64, k=3)
-        self.fuse1_conv2 = Conv(24, 64, k=1, act="relu")
+        self.fuse1_sequential = nn.Sequential(
+            Conv(1280, 64, k=1, act="relu"),
+            DWConvTranspose2d(64, 64, k=3, p1=1)
+        )
+        self.fuse1_conv = Conv(24, 64, k=1, act="relu")
 
         # fuse-2 -------------------------------
-        self.fuse2_dwconv = DWConv(64, 64, k=3, act=False)
-        self.fuse2_conv1 = Conv(64, 32, k=1, act="relu")
-        self.fuse2_dwtranconv = DWConvTranspose2d(32, 32, k=3, s=2)
-        self.fuse2_conv2 = Conv(16, 32, k=1, act="relu")
+        self.fuse2_sequential = nn.Sequential(
+            DWConv(64, 64, k=3, act=False),
+            Conv(64, 32, k=1, act="relu"),
+            DWConvTranspose2d(32, 32, k=3, s=2, p1=1, p2=1) # output size = (input_size - 1) * stride - 2 * padding + kernel_size + output_padding
+        )
+        self.fuse2_conv = Conv(16, 32, k=1, act="relu")
 
         # fuse-3 -------------------------------
+        self.fuse3_sequential = nn.Sequential(
+            DWConv(32, 32, k=3, act=False),
+            Conv(32, 24, k=1, act="relu"),
+            DWConvTranspose2d(24, 24, k=3, s=2, p1=1, p2=1)
+        )
+        self.fuse3_conv = Conv(8, 24, k=1, act="relu")
+
+        # final sequential ---------------------
+        self.final_sequential = nn.Sequential(
+            DWConv(24, 24, k=3, act=False),
+            Conv(24, 24, k=1, act="relu"),
+            DWConv(24, 24, k=3, act=False),
+            Conv(24, 24, k=1, act="relu"),
+            Conv(24, 14, k=1, act=False),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        m = self.sequential[0]
-        return self.sequential(x)
+        # extract different scale feature maps to fuse
+        fm_p2 = self.fm_p2(x) # feature map with 4 times downsample, output of block2
+        fm_p3 = self.fm_p3(x) # p3/8
+        fm_p4 = self.fm_p4(x) # p4/16
+
+        backbone_output = self.backbone_sequential[11:](fm_p4)
+        print(self.fuse1_sequential(backbone_output).shape, self.fuse1_conv(fm_p4).shape)
+        # fuse backbone feature maps
+        fuse1 = torch.add(self.fuse1_sequential(backbone_output), self.fuse1_conv(fm_p4))
+        fuse2 = torch.add(self.fuse2_sequential(fuse1), self.fuse2_conv(fm_p3))
+        fuse3 = torch.add(self.fuse3_sequential(fuse2), self.fuse3_conv(fm_p2))
+
+        # final detect
+        output = self.final_sequential(fuse3)
+
+        return output
 
 
 if __name__ == "__main__":
@@ -69,6 +107,4 @@ if __name__ == "__main__":
 
     model = HumanPose_MBN(3, 14).eval()
 
-    y = model(x)
-    print(y.shape)
-
+    summary(model, (3,192,192))
