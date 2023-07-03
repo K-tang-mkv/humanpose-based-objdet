@@ -103,8 +103,11 @@ class HumanPose_MBN(nn.Module):
 
 
 if __name__ == "__main__":
+    from thop import profile
     x = torch.randn((1, 3, 192, 192))
 
     model = HumanPose_MBN(3, 14).eval()
 
     summary(model, (3,192,192))
+    flops, params = profile(model, (x,))
+    print(f"GFLOPs: {flops/1e9}, Params: {params}")
